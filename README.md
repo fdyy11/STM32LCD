@@ -10,13 +10,14 @@
 - [环境搭建](#环境搭建)
 - [编译与烧录](#编译与烧录)
 - [LCD显示功能](#lcd显示功能)
-  - [基本显示](#基本显示)
-  - [按键翻页功能](#按键翻页功能)
-  - [中文字库](#中文字库)
-  - [性能优化](#性能优化)
 - [串口通讯功能](#串口通讯功能)
+  - [功能概述](#功能概述)
+  - [硬件连接](#硬件连接)
+  - [使用方法](#使用方法)
+  - [API接口](#api-接口)
+  - [代码示例](#代码示例)
+  - [显示逻辑](#显示逻辑)
 - [LED指示功能](#led指示功能)
-- [字模生成工具](#字模生成工具)
 - [故障排查](#故障排查)
 - [版本历史](#版本历史)
 
@@ -312,191 +313,7 @@ void LCD_Set_Backlight_Brightness(uint8_t duty_cycle) {
 
 ## 🎨 LCD显示功能
 
-### 基本显示
-
-项目已实现完整的LCD显示功能，支持横屏320x240分辨率、中文字符显示、按键翻页等特性。
-
-#### 初始化与基本API
-
-```c
-#include "lcd_st7789.h"
-
-int main(void)
-{
-    // 初始化LCD
-    LCD_Init();
-    
-    // 清屏为黑色
-    LCD_Clear(COLOR_BLACK);
-    
-    // 显示字符串（支持中文）
-    LCD_Show_String_With_Chinese(10, 50, "PV1电压：22.5V", COLOR_WHITE, COLOR_BLACK);
-    
-    while(1) {
-        // 主循环
-    }
-}
-```
-
-#### 常用API函数
-
-| 函数 | 说明 | 示例 |
-|------|------|------|
-| `LCD_Init()` | 初始化LCD | `LCD_Init();` |
-| `LCD_Clear(color)` | 清屏 | `LCD_Clear(COLOR_BLACK);` |
-| `LCD_Fill_Fast(color)` | 快速全屏清屏 | `LCD_Fill_Fast(COLOR_BLACK);` |
-| `LCD_Fill_Rect(x1,y1,x2,y2,color)` | 局部清屏 | `LCD_Fill_Rect(10,10,100,50,COLOR_BLACK);` |
-| `LCD_Show_String_With_Chinese(x,y,str,color,bg)` | 显示混合字符串 | `LCD_Show_String_With_Chinese(10,50,"电压：22.5V",COLOR_WHITE,COLOR_BLACK);` |
-
-### 按键翻页功能
-
-项目实现了按键翻页功能，支持在LCD上分页显示多行文字内容。
-
-#### 硬件接口
-
-| 按键 | STM32引脚 | 功能 |
-|------|-----------|------|
-| PageUp | PC2 | 上一页 |
-| PageDown | PC3 | 下一页 |
-
-#### 软件实现
-
-```c
-// 按键GPIO初始化
-KEY_GPIO_Init();
-
-// 按键读取宏
-#define KEY_PAGEUP_PRESSED()    ((GPIOC->IDR & (1 << 2)) == 0)
-#define KEY_PAGEDOWN_PRESSED()  ((GPIOC->IDR & (1 << 3)) == 0)
-
-// 翻页处理逻辑
-if(KEY_PAGEDOWN_PRESSED()) {
-    delay_key_debounce();  // 消抖
-    if(KEY_PAGEDOWN_PRESSED()) {
-        current_page++;
-        if(current_page >= total_pages) current_page = 0;
-        
-        // 清屏并显示新页面
-        LCD_Fill_Fast(COLOR_BLACK);
-        for(uint8_t i = 0; i < LINES_PER_PAGE; i++) {
-            // 显示当前页内容
-        }
-    }
-}
-```
-
-#### 显示参数配置
-
-```c
-// 显示布局参数（在main.c中定义）
-#define TOTAL_LINES     26  // 总行数
-#define LINES_PER_PAGE  7   // 每页显示行数
-#define LINE_HEIGHT     32  // 行高32像素（16x16字模的2倍）
-#define START_Y         0   // 第1行顶格
-#define START_X         10  // 左边距10像素
-```
-
-### 中文字库
-
-项目支持UTF-8编码的中文字符显示，内置16x16点阵中文字库和8x16点阵ASCII字库。
-
-#### 已支持字符
-
-**ASCII字符**：0-9、A-Z、a-z、常用标点符号（共62个）
-
-**中文字符**：
-- 基础参数：电、压、流、输、出、累、计、发、量
-- 状态指示：告、警、模、块、正、常
-- 交流参数：交、频、率、功
-- 电池参数：池、温、度、放、充
-- 系统参数：系、统、湿、风、况、雨
-- 特殊符号：℃（摄氏度）、：（全角冒号）、%（百分号）
-
-#### 字符显示原理
-
-```c
-// UTF-8编码自动识别
-void LCD_Show_String_With_Chinese(uint16_t x, uint16_t y, const char *str, 
-                                  uint16_t color, uint16_t bg_color) {
-    while(*str != '\0') {
-        if((uint8_t)*str < 0x80) {
-            // ASCII字符（1字节）
-            LCD_Show_ASCII(x, y, *str, color, bg_color);
-            x += 8;
-            str++;
-        } else if((uint8_t)*str >= 0xE0) {
-            // 中文字符（3字节UTF-8）
-            uint16_t unicode = UTF8_Decode(str);
-            LCD_Show_Chinese(x, y, unicode, color, bg_color);
-            x += 16;
-            str += 3;
-        }
-    }
-}
-```
-
-### 性能优化
-
-#### SPI传输优化
-
-**优化措施**：
-1. **数据建立时间**：添加2个NOP延时
-2. **高电平保持**：添加6个NOP延时
-3. **低电平保持**：添加2个NOP延时
-
-**效果**：
-- SPI时钟频率提升约30%-50%
-- 传输速度提升约40%
-- LCD采样更稳定
-
-#### 清屏速度优化
-
-**优化方案对比**：
-
-| 优化方案 | 清屏时间 | 提升幅度 | 说明 |
-|---------|---------|---------|------|
-| 原始`LCD_Fill` | ~800ms | - | 通用场景 |
-| 内联展开 | ~400ms | 50%↑ | 减少循环开销 |
-| 批量处理 | ~350ms | 56%↑ | 每次2像素 |
-| `LCD_Fill_Rect` | ~300ms | 62%↑ | 局部清屏专用 |
-| `LCD_Fill_Fast` | ~250ms | 69%↑ | 全屏清屏专用 |
-
-**推荐使用方式**：
-
-```c
-// 全屏清屏（最快）
-LCD_Fill_Fast(COLOR_BLACK);
-
-// 局部清屏（文字区域）
-LCD_Fill_Rect(START_X, START_Y, 
-              START_X + 310, 
-              START_Y + LINES_PER_PAGE * LINE_HEIGHT - 1, 
-              COLOR_BLACK);
-
-// 通用填充（任意区域）
-LCD_Fill(x1, y1, x2, y2, COLOR_BLACK);
-```
-
-#### 字符显示优化
-
-**终极优化方案**：
-- 使用批量SPI传输代替逐像素绘制
-- 只设置一次窗口，连续传输所有像素数据
-- 减少CS片选切换次数
-
-**性能提升**：
-- 8x16 ASCII字符：1次窗口设置 + 256字节SPI传输
-- 16x16 中文字符：1次窗口设置 + 512字节SPI传输
-- 字符显示速度提升约10-20倍
-
-#### 翻页性能对比
-
-| 指标 | 优化前 | 优化后 | 提升幅度 |
-|------|--------|--------|----------|
-| 局部清屏时间 | ~800ms | ~300ms | **62%↑** |
-| 全屏清屏时间 | ~1000ms | ~250ms | **75%↑** |
-| 翻页总时间 | ~1000ms | ~400ms | **60%↑** |
-| SPI传输速率 | ~1MHz | ~1.4MHz | **40%↑** |
+### 初始化与基本显示
 
 ---
 
@@ -1123,89 +940,6 @@ stm32_1/
 
 ---
 
-## 🔧 字模生成工具
-
-### 工具介绍
-
-项目提供了Python字模生成工具 `tools/generate_font.py`，用于生成16x16中文字库数据。
-
-### 使用方法
-
-#### 1. 生成单个字符字模
-
-```bash
-python tools/generate_font.py "电"
-```
-
-**输出示例**：
-```
-/* 汉字: "电" (U+7535) */
-{0x7535, {
-    0x01,0x00,0x01,0x00,0x01,0x00,0x3F,0xF8,
-    0x21,0x08,0x21,0x08,0x21,0x08,0x3F,0xF8,
-    0x21,0x08,0x21,0x08,0x21,0x08,0x3F,0xF8,
-    0x21,0x0A,0x01,0x02,0x01,0x02,0x00,0xFE
-}},
-```
-
-#### 2. 批量生成多个字符
-
-```bash
-python tools/generate_font.py "电压流"
-```
-
-#### 3. 输出到文件
-
-```bash
-python tools/generate_font.py "电" >> font_data.c
-```
-
-### 字模参数配置
-
-**取模方式**：横排8像素，从上到下，从左到右
-
-**点阵尺寸**：16x16（中文字符）、8x16（ASCII字符）
-
-**数据格式**：C语言数组格式，每行2字节（16像素）
-
-### 已添加字模统计
-
-| 类别 | 数量 | 字符列表 |
-|------|------|----------|
-| 原有字模 | 17个 | 电、压、：、流、输、出、累、计、发、量、告、警、模、块、正、常 |
-| 新增字模 | 15个 | 交、频、率、功、池、温、度、放、充、系、统、湿、风、况、雨 |
-| **总计** | **32个** | 覆盖所有显示需要的中文字符 |
-
-### 扩展字库
-
-如需添加更多中文字符，按以下步骤操作：
-
-1. **生成字模数据**：
-   ```bash
-   python tools/generate_font.py "新字符"
-   ```
-
-2. **添加到字库文件**：
-   将生成的数据添加到 `HARDWARE/OLED/chinese_font.c` 文件的 `chinese_font[]` 数组中
-
-3. **更新字库计数**：
-   修改 `chinese_font_count` 变量
-
-4. **重新编译**：
-   ```bash
-   cmake --build build/Debug
-   ```
-
-### 字库内存占用
-
-- 每个16x16中文字模：32字节
-- 每个8x16 ASCII字模：16字节
-- 当前32个中文字模：32 × 32 = 1024字节
-- 当前62个ASCII字模：62 × 16 = 992字节
-- **总计**：约2KB
-
----
-
 ## 📝 版本历史
 
 | 版本 | 日期 | 修改内容 |
@@ -1215,13 +949,12 @@ python tools/generate_font.py "电" >> font_data.c
 | v4.0 | 2026-10-09 | **PB1 LED 5秒循环闪烁 + PB7背光控制优化 + 详细故障排查指南** |
 | v5.0 | 2026-10-10 | **横屏显示配置优化：MADCTL=0x60，黑底白字分页显示，添加横屏调试指南** |
 | v6.0 | 2026-10-12 | **新增USART3串口通讯功能（PC10/PC11），第5页显示串口数据，支持5行循环显示** |
-| v6.1 | 2026-10-15 | **完善串口通讯功能：实现串口数据实时回显，优化第5页串口数据显示，添加串口调试信息输出** |
-| v7.0 | 2026-10-22 | **性能优化版本**：⚡ SPI传输优化（+40%）<br>📺 清屏区域优化（覆盖完整320x240）<br>🔧 SPI事务优化（减少CS切换）<br>🎯 新增批量SPI传输字符显示函数（速度+10-20倍）<br>📝 整合LCD清屏/翻页性能优化说明<br>🔤 新增字模生成工具说明<br>📚 更新中文字库（32个汉字） |
+| **v6.1** | **2026-10-15** | **完善串口通讯功能：实现串口数据实时回显，优化第5页串口数据显示，添加串口调试信息输出** |
 
 ---
 
-**最后更新**: 2026-10-22  
+**最后更新**: 2026-10-15  
 **适用硬件**: STM32F103RCT6 + ST7789 LCD (ATM0240B32) + ST-Link V2  
-**固件版本**: v7.0 (Performance Optimization + Chinese Font Support)  
+**固件版本**: v6.1 (USART3 Serial Communication with Echo + Page 5 Display)  
 
 **祝开发顺利！🎉**
