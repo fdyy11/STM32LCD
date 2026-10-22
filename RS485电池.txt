@@ -1,0 +1,476 @@
+==============================================================================
+PYLON LOW VOLTAGE RS485 PROTOCOL - IMPLEMENTATION SPEC
+Source: RS485-protocol-pylon-low-voltage (V3.5, Deye 12号 9600 variant)
+Purpose: Machine-readable spec for implementing a master/host driver.
+Language: plain text, ASCII punctuation, section-delimited.
+==============================================================================
+
+[SECTION 0] SCOPE AND KNOWN GAPS
+-------------------------------------------------------------------------------
+Role model:
+  - Battery / BMS = SLAVE (responds only).
+  - Inverter / upper computer / your software = MASTER.
+  - Strict request-response. Only ONE master on the bus at a time.
+  - Never broadcast concurrently. Wait for response or timeout before next poll.
+
+Fully specified in this document (IMPLEMENT THESE FIRST):
+  CID2 0x60 Get system basic info        -> complete INFO layout given
+  CID2 0x61 Get system analog values     -> complete INFO layout given (26 fields)
+  CID2 0x62 Get system alarm status      -> complete INFO layout given (4 bytes)
+  CID2 0x63 Get system charge/discharge  -> complete INFO layout given
+  CID2 0x64 System shutdown command
+
+Listed but INFO payload NOT detailed in this document:
+  CID2 0x42 Get analog value (single battery)
+  CID2 0x44 Get alarm info (single battery)
+  CID2 0x47 Get system parameter (single battery)
+  CID2 0x4F Get protocol version
+  CID2 0x51 Get manufacturer info
+  CID2 0x92 Get charge/discharge management info (single battery)
+  CID2 0x93 Get SN number (single battery)
+  CID2 0x94 Set charge/discharge management info (single battery)
+  CID2 0x95 Turn off (single battery)
+  CID2 0x96 Get firmware version (single battery)
+  ACTION: do not invent payloads for these. Implement 0x60-0x64 first, then
+  obtain the single-battery payload tables from the full Pylon spec.
+
+==============================================================================
+[SECTION 1] PHYSICAL LAYER / UART SETTINGS
+-------------------------------------------------------------------------------
+Bus            : RS485, 2-wire (A / B). Optional GND. Terminate 120 ohm if long.
+Protocol UART  : 9600 bps, 8 data bits, 1 stop bit, no parity, 1 start bit.
+                 (This variant is the 9600 build. Alternate build: 115200.)
+Echo           : none expected. Full-duplex not used.
+Inter-frame gap: >= 10 ms recommended. Response timeout: 500-1000 ms.
+Retry policy   : 2-3 retries on timeout. Do not retry on valid error response.
+Max INFO size  : LENID is 12 bits, ASCII count <= 4095.
+
+DIP SWITCH (master battery, see product manual):
+  Dip1  : 1 => 9600 bps ; 0 => 115200 bps.  REBOOT REQUIRED after change.
+  Dip2-4: group address m (1 is UP, 0 is DOWN)
+          000 -> m=0  single group, master MUST be X000
+          100 -> m=1  multi-group, first group must start here
+          010 -> m=2
+          110 -> m=3
+          001 -> m=4
+          101 -> m=5
+          011 -> m=6
+          111 -> m=7
+
+==============================================================================
+[SECTION 2] ADDRESSING
+-------------------------------------------------------------------------------
+Base rule (from spec):
+  ADR = 0x0n + 0x10 * m
+    n = position in group, 1-based, FIRST BATTERY STARTS AT n = 2
+    m = group address from DIP2-4
+  Position map: n=2 master, n=3 slave1, n=4 slave2, ... n=15 slave13.
+  Max cascaded batteries per group = product dependent.
+
+  Examples given in spec:
+    single group, slave4      : n=5, m=0 -> ADR = 0x05
+    multi group 3, slave6     : n=7, m=3 -> ADR = 0x37
+
+System commands (0x60-0x64) are answered by the MASTER battery of a group only.
+Spec text: "only addresses 12,22,32,42,52,62,72 are valid" i.e. 0x12, 0x22,
+0x32, ... = master with group offset 0x10*m and n=2.
+
+CONFLICT IN SOURCE DOCUMENT:
+  Formula with m=0, n=2 yields 0x02, but the system-command section states only
+  0x12/0x22/... are valid, and all worked examples use ADR = 0x12.
+IMPLEMENTATION RULE:
+  addr_system_candidates = [0x12 + 0x10*m_from_dip, 0x02 + 0x10*m_from_dip]
+  Probe 0x12 first. If no response within timeout, probe 0x02. Cache the winner.
+  For single-battery commands (0x42 etc.) use the per-battery ADR from the map.
+
+==============================================================================
+[SECTION 3] FRAME FORMAT
+-------------------------------------------------------------------------------
+  BYTE#   1     2     3     4     5     6      7        8      9
+  FIELD   SOI   VER   ADR   CID1  CID2  LENGTH INFO     CHKSUM EOI
+  LEN     1     1     1     1     1     2      LENID/2  2      1
+  VALUE   7E    "20"  "xx"  "46"  "xx"  "xxxx" hexascii "xxxx" 0D
+
+  SOI    = 0x7E  raw binary byte, NOT hex-ASCII encoded.
+  VER    = 0x20  -> transmitted as 2 ASCII chars '2','0' (0x32,0x30)
+  ADR    = 1 byte -> 2 ASCII hex chars, uppercase, e.g. 0x12 -> '1','2'
+  CID1   = 0x46 for all battery data -> '4','6'
+  CID2   = 1 byte -> 2 ASCII hex chars
+  LENGTH = 2 bytes -> 4 ASCII hex chars, HIGH byte first
+  INFO   = N bytes -> 2N ASCII hex chars, UPPERCASE, no separators
+  CHKSUM = 2 bytes -> 4 ASCII hex chars
+  EOI    = 0x0D  raw binary byte (CR), NOT hex-ASCII encoded.
+
+CRITICAL ENCODING RULE:
+  Everything between SOI and EOI is HEX-ASCII. One protocol byte = two ASCII
+  characters. Example: CID1 = 0x46 is sent as 0x34 0x36 ('4' '6').
+  Do NOT put raw binary values on the wire except SOI and EOI.
+  Hex digits MAY be lowercase on receive; emit uppercase on transmit.
+
+Frame total length = 1 + 2*12 + 2*len(INFO_bytes) ... concretely:
+  total_bytes = 15 + 2 * INFO_byte_count   (with SOI/EOI raw)
+
+==============================================================================
+[SECTION 4] LENGTH FIELD AND LCHKSUM
+-------------------------------------------------------------------------------
+  LENID   = number of ASCII characters in INFO = 2 * INFO_byte_count.
+            LENID = 0 means INFO is empty.
+  LCHKSUM = 4-bit checksum over the three 4-bit nibbles of LENID.
+  LENGTH  = (LCHKSUM << 12) | LENID
+
+Algorithm (pseudocode):
+  def lchksum(lenid):
+      s = ((lenid >> 8) & 0xF) + ((lenid >> 4) & 0xF) + (lenid & 0xF)
+      return ((~(s % 16)) + 1) & 0xF          # == (16 - s%16) & 0xF
+
+  def length_field(lenid):
+      return ((lchksum(lenid) << 12) | (lenid & 0xFFF)) & 0xFFFF
+
+  transmit: format length_field(lenid) as 4 uppercase hex chars.
+
+Worked example from spec:
+  INFO = 18 ASCII chars -> LENID = 0x012 = 0b000000010010
+  nibbles 0 + 1 + 2 = 3 ; 3 % 16 = 3 ; (~3+1)&0xF = 0xD
+  LENGTH = 0xD012 -> transmit "D012"
+
+Empty INFO: LENID = 0 -> nibbles 0+0+0 = 0 -> LCHKSUM = (16-0)&0xF = 0
+  LENGTH = 0x0000 -> transmit "0000"
+
+==============================================================================
+[SECTION 5] CHKSUM
+-------------------------------------------------------------------------------
+  Computed over the ASCII character values of VER+ADR+CID1+CID2+LENGTH+INFO
+  (i.e. everything from index 1 up to but excluding the CHKSUM field).
+  SOI, EOI, CHKSUM are excluded.
+
+Algorithm (pseudocode):
+  def chksum(payload_ascii_bytes):
+      s = sum(payload_ascii_bytes) & 0xFFFF
+      return ((~s) + 1) & 0xFFFF              # == (0x10000 - s) & 0xFFFF
+
+  transmit: format as 4 uppercase hex chars.
+
+NOTE: you sum the ASCII codes (0x30..0x46), NOT the decoded byte values.
+Worked example from spec: "~1203400456ABCEFEFC71\r" -> CHKSUM = 0xFC71.
+
+==============================================================================
+[SECTION 6] RESPONSE FRAME
+-------------------------------------------------------------------------------
+  SOI VER ADR CID1 RTN LENGTH INFO CHKSUM EOI
+  Byte 5 is RTN instead of CID2; CID1 stays 0x46.
+  ADR echoes the request ADR. VER echoes normally 0x20 (tolerate other values
+  on receive; do not hard-reject 0x21/0x25).
+
+RTN codes:
+  00H  normal / success
+  01H  VER error
+  02H  CHKSUM error
+  03H  LCHKSUM error
+  04H  CID2 invalid
+  05H  command format error
+  06H  INFO data invalid
+  90H  ADR error
+  91H  internal communication error
+
+On RTN != 0x00: log code, do not parse INFO. For 02H/03H typically retry once.
+
+==============================================================================
+[SECTION 7] BYTE ORDER AND DATA TYPES
+-------------------------------------------------------------------------------
+  All multi-byte analog values are BIG-ENDIAN (high byte first).
+  Signed   integer: int16,  -32768..32767
+  Unsigned integer: uint16, 0..65535
+  This protocol uses fixed-point integers, NOT IEEE754 floats.
+  Missing / unsupported value placeholder: 0xFF fill (0xFFFF for a 2-byte
+  field, 0xFF for a 1-byte field) = "not available", must not be decoded.
+
+==============================================================================
+[SECTION 8] CID2 COMMAND TABLE
+-------------------------------------------------------------------------------
+ CID1 is always 0x46.
+
+ 0x42  Get analog value, fixed point              (single battery)
+ 0x44  Get alarm info                             (single battery)
+ 0x47  Get system parameter, fixed point          (single battery)
+ 0x4F  Get protocol version
+ 0x51  Get manufacturer info
+ 0x92  Get charge/discharge management info       (single battery)
+ 0x93  Get SN number                              (single battery)
+ 0x94  Set charge/discharge management info       (single battery)
+ 0x95  Turn off                                   (single battery)
+ 0x96  Get firmware version                       (single battery)
+ 0x60  Get system basic info                      (master only)  <- detailed
+ 0x61  Get system analog data                     (master only)  <- detailed
+ 0x62  Get system alarm info                      (master only)  <- detailed
+ 0x63  Get system charge/discharge info           (master only)  <- detailed
+ 0x64  System shutdown                            (master only)  <- detailed
+
+==============================================================================
+[SECTION 9] CID2 0x60 - SYSTEM BASIC INFO
+-------------------------------------------------------------------------------
+REQUEST  : INFO empty.  LENID=0. LENGTH="0000".
+           ADR = master, CID1=0x46, CID2=0x60.
+RESPONSE : INFO layout (all ASCII fields, big-endian ints):
+
+  OFFSET  SIZE  FIELD
+  0       10    master device name, ASCII, space/NUL padded
+  10      20    manufacturer name, ASCII, space/NUL padded
+  30      2     software version, uint16
+  32      1     battery count N
+  33      16    battery 1 barcode, ASCII
+  49      16    battery 2 barcode, ASCII
+  ...     ...   ...
+  33+16*k  16    battery (k+1) barcode, ASCII
+  TOTAL = 33 + 16*N bytes  ->  LENID = (33 + 16*N) * 2
+
+  Spec example: N=2 -> 65 bytes -> LENID=0x082 -> LENGTH="8082"
+  Name "Force_L", manufacturer "Pylon", version 0x0009, barcodes
+  "0123456789abcdef", "1123456789abcdef".
+
+==============================================================================
+[SECTION 10] CID2 0x61 - SYSTEM ANALOG VALUES
+-------------------------------------------------------------------------------
+REQUEST  : INFO empty. LENID=0. LENGTH="0000". CID2=0x61.
+RESPONSE : INFO = 49 bytes fixed -> LENID = 98 = 0x062 -> LENGTH="8062"
+
+  OFF  SIZE TYPE   FIELD                          DECODE
+  0    2    u16    system total average voltage  /1000 -> V
+  2    2    s16    system total current          /1000 -> A, charge = +
+  4    1    u8     system SOC                    raw -> %
+  5    2    u16    average cycle count           raw -> cycles
+  7    2    u16    max cycle count               raw -> cycles
+  9    1    u8     average SOH                   raw -> %
+  10   1    u8     min SOH                       raw -> %
+  11   2    u16    max cell voltage              /1000 -> V
+  13   2    u16    max cell voltage module addr  hi=group lo=module
+  15   2    u16    min cell voltage              /1000 -> V
+  17   2    u16    min cell voltage module addr  hi=group lo=module
+  19   2    s16    avg cell temperature          raw/10 - 273.1 -> degC
+  21   2    s16    max cell temperature          raw/10 - 273.1 -> degC
+  23   2    u16    max cell temp module addr     hi=group lo=module
+  25   2    s16    min cell temperature          raw/10 - 273.1 -> degC
+  27   2    u16    min cell temp module addr     hi=group lo=module
+  29   2    s16    avg MOSFET temperature         raw/10 - 273.1 -> degC
+  31   2    s16    max MOSFET temperature         raw/10 - 273.1 -> degC
+  33   2    u16    max MOSFET temp module addr   hi=group lo=module
+  35   2    s16    min MOSFET temperature         raw/10 - 273.1 -> degC
+  37   2    u16    min MOSFET temp module addr   hi=group lo=module
+  39   2    s16    avg BMS temperature           raw/10 - 273.1 -> degC
+  41   2    s16    max BMS temperature           raw/10 - 273.1 -> degC
+  43   2    u16    max BMS temp module addr      hi=group lo=module
+  45   2    s16    min BMS temperature           raw/10 - 273.1 -> degC
+  47   2    u16    min BMS temp module addr      hi=group lo=module
+  TOTAL 49 bytes
+
+UNIT WARNINGS (source document is internally inconsistent, use the examples):
+  Voltage : table says "accuracy 3"; all examples divide by 1000. USE /1000.
+            0x2E53 = 11859 -> 11.859 V ; 0x0DB8 = 3512 -> 3.512 V
+  Current : table says "accuracy 2"; the worked example uses 0x61A8 = 25000
+            -> 25.00 A, i.e. /1000. USE /1000. Charge positive, discharge
+            negative. (An older revision said "actual = transmitted * 100";
+            ignore that, it contradicts the example.)
+  Temperature: raw is decided deci-Kelvin offset by 273.1.
+            degC = raw/10 - 273.1
+            25.5 degC -> raw 2986 = 0x0BAA
+            -12.4 degC -> raw 2607 (s16)
+  Module addr: high byte = group address, low byte = battery address in group.
+            0x0304 = group 3, address 4.
+  SOC / SOH / cycles: raw integer, no scaling.
+
+==============================================================================
+[SECTION 11] CID2 0x62 - SYSTEM ALARM / PROTECTION STATUS
+-------------------------------------------------------------------------------
+REQUEST  : INFO empty. LENID=0. LENGTH="0000". CID2=0x62.
+RESPONSE : INFO = 4 bytes fixed -> LENID = 8 -> LENGTH = "8008"
+  byte0 alarm status 1
+  byte1 alarm status 2
+  byte2 protection status 1
+  byte3 protection status 2
+
+Each bit: 0 = normal, 1 = triggered. bit7 = MSB.
+
+ALARM STATUS 1 (byte0)
+  bit7 module total voltage HIGH
+  bit6 module total voltage LOW
+  bit5 cell voltage HIGH
+  bit4 cell voltage LOW
+  bit3 cell temperature HIGH
+  bit2 cell temperature LOW
+  bit1 MOSFET temperature HIGH
+  bit0 cell voltage consistency alarm
+
+ALARM STATUS 2 (byte1)
+  bit7 cell temperature consistency alarm
+  bit6 charge over-current alarm
+  bit5 discharge over-current alarm
+  bit4 internal communication error
+  bit3..0 unused
+
+PROTECTION STATUS 1 (byte2)
+  bit7 module total over-voltage
+  bit6 module total under-voltage
+  bit5 cell over-voltage
+  bit4 cell under-voltage
+  bit3 cell over-temperature
+  bit2 cell under-temperature
+  bit1 MOSFET over-temperature
+  bit0 unused
+
+PROTECTION STATUS 2 (byte3)
+  bit7 unused
+  bit6 charge over-current
+  bit5 discharge over-current
+  bit4 unused
+  bit3 system fault protection
+  bit2..0 unused
+
+==============================================================================
+[SECTION 12] CID2 0x63 - SYSTEM CHARGE/DISCHARGE MANAGEMENT INFO
+-------------------------------------------------------------------------------
+REQUEST  : INFO empty. LENID=0. LENGTH="0000". CID2=0x63.
+RESPONSE : INFO = 9 bytes -> LENID = 18 = 0x012 -> LENGTH = "D012"
+
+  OFF  SIZE TYPE  FIELD                    DECODE
+  0    2    u16   charge voltage limit     /1000 -> V   (spec "accuracy 3")
+  2    2    u16   discharge voltage limit  /1000 -> V   (spec "accuracy 3")
+  4    2    u16   max charge current       /10   -> A   (spec "accuracy 1")
+  6    2    u16   max discharge current    /10   -> A   (spec "accuracy 1")
+  8    1    u8    charge/discharge status  bitfield, see below
+
+CHARGE/DISCHARGE STATUS (byte 8)
+  bit7 charge enable      1 = yes, 0 = request stop charge
+  bit6 discharge enable   1 = yes, 0 = request stop discharge
+  bit5 charge immediately 1 = yes, 0 = normal
+  bit4 full charge request 1 = yes, 0 = normal
+  bit3..0 reserved
+
+==============================================================================
+[SECTION 13] CID2 0x64 - SYSTEM SHUTDOWN
+-------------------------------------------------------------------------------
+REQUEST  : CID2=0x64, INFO per full spec (payload not detailed in this doc).
+           Send only when shutdown is explicitly intended. No periodic issuing.
+RESPONSE : standard header; RTN=0x00 on success.
+
+==============================================================================
+[SECTION 14] GENERIC BUILDER / PARSER PSEUDOCODE
+-------------------------------------------------------------------------------
+def lchksum(lenid):
+    s = ((lenid >> 8) & 0xF) + ((lenid >> 4) & 0xF) + (lenid & 0xF)
+    return ((~(s % 16)) + 1) & 0xF
+
+def chksum(payload_ascii):
+    s = sum(payload_ascii) & 0xFFFF
+    return ((~s) + 1) & 0xFFFF
+
+def build(adr, cid2, info=b"", ver=0x20, cid1=0x46):
+    info_ascii = info.hex().upper().encode("ascii")   # 2 chars per byte
+    lenid = len(info_ascii)
+    length = "%04X" % (((lchksum(lenid) << 12) | (lenid & 0xFFF)) & 0xFFFF)
+    body = ("%02X%02X%02X%02X%s" % (ver, adr, cid1, cid2, length)).encode()
+    body += info_ascii
+    cs = ("%04X" % chksum(body)).encode("ascii")
+    return b"\x7e" + body + cs + b"\x0d"
+
+def parse(frame):
+    assert frame[0] == 0x7E and frame[-1] == 0x0D, "bad SOI/EOI"
+    body    = frame[1:-5]          # VER..INFO as ASCII
+    cs_rx   = frame[-5:-1]         # 4 ASCII hex chars
+    assert chksum(body) == int(cs_rx, 16), "CHKSUM mismatch"
+    ver   = int(body[0:2], 16)
+    adr   = int(body[2:4], 16)
+    cid1  = int(body[4:6], 16)
+    rtn   = int(body[6:8], 16)
+    length= int(body[8:12], 16)
+    lenid = length & 0x0FFF
+    assert lchksum(lenid) == ((length >> 12) & 0xF), "LCHKSUM mismatch"
+    info_ascii = body[12:]
+    assert len(info_ascii) == lenid, "LENID mismatch"
+    info = bytes.fromhex(info_ascii.decode("ascii"))
+    return dict(ver=ver, adr=adr, cid1=cid1, rtn=rtn,
+                lenid=lenid, info=info)
+
+Poll loop (per group master):
+    for cid2 in (0x61, 0x62, 0x63):
+        tx = build(adr_master, cid2)
+        write(tx); rx = read_until(0x0D, timeout=1.0)
+        if not rx:              -> timeout, log, next cycle
+        elif parse(rx).rtn != 0 -> log code, next cycle
+        else                    -> decode INFO by section 9/10/11/12
+    poll interval: 1-5 s, or as required by the inverter.
+
+==============================================================================
+[SECTION 15] VERIFIED TEST VECTORS (master ADR = 0x12)
+-------------------------------------------------------------------------------
+Each line is the exact byte sequence on the wire (hex), SOI/EOI raw.
+
+REQ 0x60 basic info        : 7E 32 30 31 32 34 36 36 30 30 30 30 30 46 44 41 42 0D
+                             ASCII: ~201246600000FDAB\r
+REQ 0x61 system analog     : 7E 32 30 31 32 34 36 36 31 30 30 30 30 46 44 41 41 0D
+                             ASCII: ~201246610000FDAA\r
+REQ 0x62 system alarm      : 7E 32 30 31 32 34 36 36 32 30 30 30 30 46 44 41 39 0D
+                             ASCII: ~201246620000FDA9\r
+REQ 0x61 with ADR = 0x02   : 7E 32 30 30 32 34 36 36 31 30 30 30 30 46 44 41 41 0D
+                             ASCII: ~200246610000FDBA\r    (if 0x12 silent, probe this)
+
+RESP 0x61 example (from spec), decoded:
+  7E 32 30 31 32 34 36 30 30 38 30 36 32 32 45 35 33 36 31 41 38 ...
+  header: SOI=7E VER=20 ADR=12 CID1=46 RTN=00 LENGTH="8062"
+  LENID = 0x062 = 98 ASCII chars = 49 INFO bytes
+  field values:
+    off 0  : 0x2E53 -> 11.859 V
+    off 2  : 0x61A8 -> 25.00 A
+    off 4  : 0x62   -> 98 %
+    off 5  : 0x09D4 -> 2516 cycles
+    off 7  : 0x0B74 -> 2932 cycles
+    off 9  : 0x62   -> 98 %   (avg SOH)
+    off 10 : 0x61   -> 97 %   (min SOH)
+    off 11 : 0x0DB8 -> 3.512 V
+    off 13 : 0x0304 -> group 3, module 4
+    off 15 : 0x0CBB -> 3.259 V
+    off 17 : 0x0104 -> group 1, module 4
+    off 19 : 0x0BAA -> 25.5 degC
+    off 21 : 0x0BB7 -> 26.8 degC
+    off 23 : 0x0305
+    off 25 : 0x0B9D -> 24.2 degC
+    off 27 : 0x0105
+    off 29 : 0x0BAA -> 25.5 degC
+    off 31 : 0x0BB8 -> 26.9 degC
+    off 33 : 0x0306
+    off 35 : 0x0B9C -> 24.1 degC
+    off 37 : 0x0106
+    off 39 : 0x0BAA -> 25.5 degC
+    off 41 : 0x0BB6 -> 26.7 degC
+    off 43 : 0x0307
+    off 45 : 0x0B9E -> 24.3 degC
+    off 47 : 0x0107
+
+SELF-TEST ASSERTIONS for the implementation:
+  build(0x12,0x61) == b"~201246610000FDAA\r"
+  build(0x12,0x60) == b"~201246600000FDAB\r"
+  build(0x12,0x62) == b"~201246620000FDA9\r"
+  length_field(18) == 0xD012
+  length_field(98) == 0x8062
+  length_field(0)  == 0x0000
+  chksum(b"201246610000") == 0xFDAA
+
+==============================================================================
+[SECTION 16] COMMON FAILURE MODES / CHECKLIST
+-------------------------------------------------------------------------------
+1. Sending 0x46 as one raw byte instead of ASCII '4','6' -> no response.
+2. Forgetting LCHKSUM in LENGTH, or computing CHKSUM over decoded bytes
+   instead of ASCII character codes.
+3. Sending EOI as ASCII "0D" (0x30 0x44) instead of raw 0x0D.
+4. Lowercase hex on transmit (some BMS tolerates it, do not rely on it).
+5. Wrong ADR: system commands answered by group master only. Try 0x12 then 0x02.
+6. DIP switch changed but battery not rebooted -> baud/address unchanged.
+7. 9600 vs 115200: this build is 9600. Confirm Dip1 = 1.
+8. RS485 A/B swapped, or using the CAN port instead of RS485.
+9. Multiple pollers on the bus -> collisions. One master only.
+10. Assuming 42H/44H payload from 61H layout - they are DIFFERENT and are not
+    defined in this document.
+11. Treating 0xFF / 0xFFFF fields as real values - they mean "not available".
+12. Applying float decoding - values are big-endian fixed-point integers.
+
+==============================================================================
+END OF SPEC
+==============================================================================
