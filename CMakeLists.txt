@@ -35,11 +35,8 @@ target_sources(${PROJECT_NAME} PRIVATE
 
 # Add include directories
 target_include_directories(${PROJECT_NAME} PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/Inc"
-    "${CMAKE_CURRENT_SOURCE_DIR}/SYSTEM/usart"
-    "${CMAKE_CURRENT_SOURCE_DIR}/SYSTEM/sys"
-    "${CMAKE_CURRENT_SOURCE_DIR}/SYSTEM/delay"
-    "${CMAKE_CURRENT_SOURCE_DIR}/HARDWARE/OLED"
+    "${CMAKE_CURRENT_SOURCE_DIR}/System"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Modules"
 )
 
 # Compiler options
@@ -143,13 +140,43 @@ find_program(STFLASH_EXECUTABLE st-flash)
 
 if(STFLASH_EXECUTABLE)
     add_custom_target(flash_stlink_fast
-        COMMAND ${STFLASH_EXECUTABLE} write ${CMAKE_BINARY_DIR}/${PROJECT_NAME}.bin 0x08000000
+        COMMAND ${STFLASH_EXECUTABLE} --reset write ${CMAKE_BINARY_DIR}/${PROJECT_NAME}.bin 0x08000000
         DEPENDS ${PROJECT_NAME}
         COMMENT "Flashing via ST-Link using st-flash (fast mode)..."
         VERBATIM
     )
 else()
     message(WARNING "st-flash not found. Fast ST-Link flash target will not be available.")
+endif()
+
+# ============================================================================
+# Custom target: Flash firmware via STM32CubeProgrammer
+# ============================================================================
+set(STM32_CUBE_PROGRAMMER_ROOT "$ENV{LOCALAPPDATA}/stm32cube/bundles/programmer"
+    CACHE PATH "STM32CubeProgrammer bundle directory")
+
+find_program(STM32_CUBE_PROGRAMMER_CLI
+    NAMES STM32_Programmer_CLI.exe STM32_Programmer_CLI)
+
+if(NOT STM32_CUBE_PROGRAMMER_CLI AND IS_DIRECTORY "${STM32_CUBE_PROGRAMMER_ROOT}")
+    file(GLOB STM32_CUBE_PROGRAMMER_CANDIDATES
+        "${STM32_CUBE_PROGRAMMER_ROOT}/*/bin/STM32_Programmer_CLI.exe")
+    if(STM32_CUBE_PROGRAMMER_CANDIDATES)
+        list(SORT STM32_CUBE_PROGRAMMER_CANDIDATES COMPARE NATURAL ORDER DESCENDING)
+        list(GET STM32_CUBE_PROGRAMMER_CANDIDATES 0 STM32_CUBE_PROGRAMMER_CLI)
+    endif()
+endif()
+
+if(STM32_CUBE_PROGRAMMER_CLI)
+    add_custom_target(flash_stlink_cube
+        COMMAND "${STM32_CUBE_PROGRAMMER_CLI}" -c port=SWD
+                -w "${CMAKE_BINARY_DIR}/${PROJECT_NAME}.hex" -v -rst
+        DEPENDS ${PROJECT_NAME}
+        COMMENT "Flashing firmware via ST-Link using STM32CubeProgrammer..."
+        VERBATIM
+    )
+else()
+    message(WARNING "STM32CubeProgrammer CLI not found. CubeProgrammer flash target will not be available.")
 endif()
 
 # ============================================================================

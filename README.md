@@ -10,6 +10,7 @@
 - [环境搭建](#环境搭建)
 - [编译与烧录](#编译与烧录)
 - [LCD显示功能](#lcd显示功能)
+- [RS485电池通讯](#rs485电池通讯)
 - [串口通讯功能](#串口通讯功能)
   - [功能概述](#功能概述)
   - [硬件连接](#硬件连接)
@@ -37,6 +38,7 @@
 | CS      | **PA12**  | 片选信号 |
 | D/CX    | **PB6**   | 数据/命令选择 |
 | RST     | **PA15**  | 复位信号 |
+| LEDK    | **PB7**   | 背光控制 |
 
 ### 2. LED 指示灯接线
 
@@ -71,7 +73,7 @@
 - **烧录前**：BOOT0 = HIGH (3.3V), BOOT1 = LOW (GND)
 - **烧录后**：BOOT0 = LOW (GND), BOOT1 = LOW (GND)
 
-### 5. USART3 串口通讯接线（用于数据传输）ⓘ
+### 5. UART4 WiFi串口（PC10/PC11 固定引脚）
 
 | USB-TTL引脚 | STM32引脚 | 说明 |
 |------------|-----------|------|
@@ -79,12 +81,22 @@
 | TX         | **PC11** (RX) | 交叉连接 |
 | GND        | GND       | 共地 |
 
-> 📌 **功能说明**：
-> - **PC10**: USART3发送引脚（TX）
-> - **PC11**: USART3接收引脚（RX）
-> - **波特率**: 115200（可配置）
-> - **数据格式**: 8位数据，1位停止位，无校验
-> - **用途**: 从串口调试助手发送数据，在第5页显示接收到的内容
+> PC10/PC11 是 UART4 的固定引脚：PC10 是 TX，PC11 是 RX。当前固件默认按 115200bps、8N1 配置 UART4 用于WiFi模块通讯；具体波特率可在 `wifi_uart4.h` 的 `WIFI_UART_BAUD_RATE` 宏中修改。
+
+### 6. Pylon 电池 RS485 接线
+
+| TTL-RS485 模块 | STM32F103RCT6 | 说明 |
+|---------------|---------------|------|
+| DI / TXD | **PB10** | USART3 默认 TX 引脚 |
+| RO / RXD | **PB11** | USART3 默认 RX 引脚 |
+| GND | GND | 必须共地 |
+| A / B | 电池 RS485 A / B | A 对 A、B 对 B；无响应时检查是否需要交换 |
+
+固件按协议文档使用 **9600 bps、8N1**，并按默认单组地址先查询 `0x12`，无响应再尝试 `0x02`。如果电池 DIP 配置了其他组地址，在 `battery_rs485.h` 中设置 `BATTERY_GROUP_ADDRESS`（0–7），修改后重新编译。电池RS485使用 USART3 的 PB10/PB11 引脚，PB13 作为 DE/RE 收发方向控制（高电平发送、低电平接收）；WiFi使用 UART4 的 PC10/PC11 固定引脚，两路互不占用。
+
+> **接线安全**：确认模块 TTL 侧为 3.3V 电平，并只连接电池的 RS485 端口，不要连接 CAN 口。
+>
+> 协议文件中 ADR=`0x02` 的示例校验和与其给出的 ASCII 求和算法不一致；固件按校验和算法生成该请求。
 
 ---
 
@@ -162,8 +174,13 @@ cmake --build build/Debug
 cmake --build build/Debug --target flash_stlink_fast
 
 # 方式C：直接使用st-flash
-st-flash write build/Debug/stm32_1.bin 0x08000000
+st-flash --reset write build/Debug/stm32_1.bin 0x08000000
+
+# 方式D：使用STM32CubeProgrammer（需连接ST-Link）
+cmake --build build/Debug --target flash_stlink_cube
 ```
+
+`flash_stlink_cube` 会优先从 PATH 查找 STM32CubeProgrammer；在 Windows 上也会自动查找 `%LOCALAPPDATA%\stm32cube\bundles\programmer` 下的已安装版本。
 
 #### 预期输出
 ```
@@ -315,46 +332,46 @@ void LCD_Set_Backlight_Brightness(uint8_t duty_cycle) {
 
 ### 初始化与基本显示
 
+> **已验证配置（不要随意删除）**
+>
+> `PA15`、`PB3` 和 `PB4` 是 STM32F103 的调试端口复用引脚：复位状态下默认 JTAG/SWD 配置可能占用它们。当前 LCD 使用的软件 SPI 和复位引脚为：
+>
+> - `PA15`：LCD RST
+> - `PB3`：LCD SCK
+> - `PB4`：LCD MISO/未使用
+>
+> 因此 [LCD_GPIO_Init](./Modules/lcd_st7789.c) 必须启用 AFIO，并只禁用 JTAG-DP：
+>
+> ```c
+> RCC->APB2ENR |= (1u << 0);       // 使能 AFIO
+> AFIO->MAPR = (AFIO->MAPR & ~AFIO_MAPR_SWJ_CFG) |
+>              AFIO_MAPR_SWJ_CFG_JTAGDISABLE;
+> ```
+>
+> `SWJ_CFG=010` 保留 `PA13/SWDIO` 和 `PA14/SWCLK`，可继续使用 ST-Link 多次烧录。不要改成 `SWJ_CFG=100`（禁用全部 SWJ），否则固件运行后可能无法继续通过 SWD 连接。
+>
+> AFIO配置只允许执行一次，由 [LCD_GPIO_Init](./Modules/lcd_st7789.c) 统一设置 `SWJ_CFG=010`。USART3 使用 PB10/PB11 默认复用引脚，因此初始化中不得再次读取或写入 `AFIO->MAPR`；UART4 使用固定的 PC10/PC11，也不应改写 AFIO。不要在 `SystemInit()`、USART3初始化和周期任务中重复写入 SWJ_CFG。
+
 ---
 
-## 📡 串口通讯功能
+### 软件 SPI 快速翻页
 
-### 功能概述
+- 当前 Debug 配置保留调试符号并使用 `-O0`，不是本项目中识别和解决 LCD/SWD 冲突的主要原因。
+- 区域填充使用与 LCD 命令和字符显示相同的 `SOFT_SPI_WriteData()` 时序，不再使用展开 GPIO 序列的高速实现。
+- 软件 SPI 先在 SCK 下降沿设置 MOSI，再单独拉高 SCK，保持模式 0 的数据建立时间；每个时钟周期写两次 BSRR。
+- 区域填充结束时将 SCK 恢复为低电平，确保下一条 LCD 命令的首位也有完整时钟沿。
+- 上一页和下一页使用同一全屏快速刷新路径，启动时也只清屏一次。
 
-USART3 串口通讯功能用于接收外部设备发送的数据，并在LCD屏幕的第5页显示接收到的内容。**支持串口回显功能**，收到数据后会原样返回，方便验证收发功能。
+翻页实际耗时受 MCU 主频、屏幕模块和连线影响，应以目标硬件实测为准。
 
-**特性**：
-- ✅ 使用PC10(TX)和PC11(RX)引脚
-- ✅ 波特率115200，可配置
-- ✅ 支持接收并显示最多5行数据
-- ✅ 每行最多40个字符
-- ✅ 超出5行后自动从第1行开始覆盖
-- ✅ 仅在第5页显示串口数据
-- ✅ **串口回显：收到数据后原样返回**
-- ✅ **实时接收：中断方式接收数据**
+## 📡 双串口通讯功能
 
-### 硬件连接
+当前固件同时保留两路独立串口：
 
-```
-USB-TTL模块          STM32F103RCT6
-┌─────────┐          ┌─────────┐
-│   TX    │─────────→│  PC11   │ (RX)
-│   RX    │←─────────│  PC10   │ (TX)
-│   GND   │──────────│   GND   │
-└─────────┘          └─────────┘
-```
+- **USART3（PB10/PB11，9600 bps）**：电池 TTL-RS485 协议通讯
+- **UART4（PC10/PC11，115200 bps）**：WiFi模块通讯
 
-> ⚠️ **注意**：TX和RX需要交叉连接！
-
-### 使用方法
-
-**1. 初始化串口**
-
-在`main.c`中已自动初始化：
-
-```c
-usart3_init(115200);  // 初始化USART3，波特率115200
-```
+UART4 接收数据通过中断写入256字节环形缓冲区，可使用 `WiFi_UART4_ReadBytes()`读取；发送可使用 `WiFi_UART4_SendBytes()`或 `WiFi_UART4_SendString()`。
 
 **2. 发送数据到STM32**
 
@@ -752,6 +769,7 @@ delay_ms(1000);           // 延时1秒
 | v5.0 | 2026-10-10 | **横屏显示配置优化：MADCTL=0x60，黑底白字分页显示，添加横屏调试指南** |
 | v6.0 | 2026-10-12 | **新增USART3串口通讯功能（PC10/PC11），第5页显示串口数据，支持5行循环显示** |
 | **v6.1** | **2026-10-15** | **完善串口通讯功能：实现串口数据实时回显，优化第5页串口数据显示，添加串口调试信息输出** |
+| **v6.2** | **2026-10-29** | **修复LCD与SWD/JTAG引脚冲突**：保留 SWJ_CFG=010 释放 PA15/PB3/PB4，同时保留 PA13/PA14 SWD；恢复稳定软件 SPI 时序。 |
 
 ---
 
@@ -797,6 +815,17 @@ ERROR: send_recv failed
 3. 确认STM32已上电（测量3.3V引脚电压）
 4. 尝试降低SWD频率
 
+**第二次烧录失败（`Failed to enter SWD mode`）的历史经验**：
+
+- `PA15/PB3/PB4` 与 LCD 共用，必须用 `SWJ_CFG=010` 释放 PA15/PB3/PB4，同时保留 PA13/PA14 的 SWD。
+- AFIO/SWJ 配置只由 `LCD_GPIO_Init()` 执行一次。`SystemInit()`、USART3、UART4 和主循环不得重复写入 `AFIO->MAPR`。
+- 不要把 SWJ 配置写入 `SystemInit()` 或其他启动/周期函数中反复切换；当前已验证方案是在 `LCD_GPIO_Init()` 中执行一次必要配置。
+- 不要同时禁用 JTAG 和 SWD；固件运行后会丢失 SWD 连接。
+- 不要把无 `AFIO` 配置误认为是修复方案：只配置 GPIO 并不能释放 PA15/PB3/PB4 的默认调试复用功能。
+- USART3 的 PB10/PB11 是默认复用引脚，初始化不得执行 `AFIO->MAPR &= ~AFIO_MAPR_USART3_REMAP` 或其他 AFIO 读写；重复写入 AFIO 会导致第二次 ST-Link 烧录异常。
+- 硬件 NRST 未接时，ST-Link 会通过 AIRCR 软件复位；优先检查 PA13、PA14 和 GND，再检查固件的 SWJ 配置。
+- RCC 72 MHz 不是此前问题的根因，除非示波器测得时钟异常，不应为了 SWD 或 LCD 临时降低系统时钟。
+
 ---
 
 ### 串口烧录相关问题
@@ -833,6 +862,19 @@ ERROR: send_recv failed
 3. 使用示波器检查SPI时钟和数据信号
 4. 确认RST引脚有复位脉冲
 5. **尝试修改MADCTL配置**（见下方优化说明）
+
+> **已验证的 LCD 引脚冲突经验**
+>
+> 如果 LCD 不亮或完全无响应，同时目标板之前能正常多次 SWD 烧录，应优先检查 `LCD_GPIO_Init()` 中是否保留了下面的配置：
+>
+> ```c
+> AFIO->MAPR &= ~AFIO_MAPR_SWJ_CFG;
+> AFIO->MAPR |= AFIO_MAPR_SWJ_CFG_JTAGDISABLE;
+> ```
+>
+> 仅把 `PA15/PB3/PB4` 配成推挽/浮空 GPIO 不足以释放它们的 JTAG复用；`PB4` 当前作为未使用的浮空输入时也必须保留 SWJ 配置。不要为了追求 LCD 正常而删除这段代码。
+>
+> USART3 使用 `PB10/PB11` 时，不应修改 `PA13/SWDIO`、`PA14/SWCLK`、重写 `SWJ_CFG` 或重复读写 `AFIO->MAPR`。JTAG/SWD复用只由 LCD初始化一次设置为 `SWJ_CFG=010`（保留 SW-DP，关闭 JTAG）；USART3 使用默认无重映射引脚，不执行任何 AFIO 重映射操作。重复 AFIO 写入曾导致二次 ST-Link 烧录失败。
 
 ---
 
@@ -881,8 +923,56 @@ $env:Path = "D:\Tools\ARM_GCC\arm-gnu-toolchain-13.2.Rel1-mingw-w64-i686-arm-non
 
 - **RAM占用**: 1976字节（4.02% / 48KB）
 - **FLASH占用**: ~3KB（1.14% / 256KB）
-- **SPI速度**: ~2.25MHz（FPCLK/32，优化后）
-- **清屏时间**: 约50ms（320×240像素）
+- **SPI速度**: 软件 SPI，取决于编译优化和 GPIO 写入时序
+- **清屏时间**: 取决于目标板和 LCD 模块，建议实测
+
+## 🔋 RS485电池通讯
+
+设备上电后，USART3 以 9600 bps 初始化；主循环依次轮询系统模拟量 `0x61`、告警/保护状态 `0x62`、充放电限制 `0x63` 和系统基本信息 `0x60`。一轮结束后等待 500 ms 再开始下一轮；实际周期还包括发送、响应和重试时间。通常每条请求等待响应最多 500 ms，超时重试，并根据协议尝试系统主机地址 `0x12` / `0x02`。`0x60` 长响应接收期间按字节活动延长等待，最长 5 秒；帧校验通过且长度等于 `33 + 16*N` 后，INFO 偏移 32 的 N 才作为电池数量保存。收到有效错误响应不会当作测量数据。
+
+### USART波特率BRR编码经验
+
+USART3出现持续发送 `00 00...`、波形乱码或USB-RS485助手无法识别帧头时，应同时检查波特率寄存器 `USART3->BRR`，不要只检查DE/RE和A/B接线。
+
+STM32F103的BRR不是直接写入波特率，而是按下面的方式编码：
+
+```text
+USARTDIV = fCK / (16 * baud)
+BRR.MANTISSA = floor(USARTDIV)
+BRR.FRACTION  = round((USARTDIV - MANTISSA) * 16)
+USART3->BRR = (MANTISSA << 4) | FRACTION
+```
+
+当前PCLK1为35MHz时：
+
+```text
+9600 bps：USARTDIV = 227.864583
+BRR = 0xE3E
+```
+
+错误经验：曾经把`((fCK * 16) + baud/2) / baud`得到的值直接写入BRR。这个中间值已经是`USARTDIV*16`，再按BRR拆分时使用错误，实际会形成异常波特率，最终表现为全0、乱码或无法收到协议帧。当前代码必须使用上述MANTISSA/FRACTION编码；UART4也采用相同算法，35MHz PCLK1下115200对应BRR约为`0x130`。
+
+修复后快速自检：
+
+1. 确认串口助手设置为9600 bps、8N1。
+2. 确认PB13发送时为高电平、接收时为低电平。
+3. 用示波器抓PB10和PB13；PB10正常帧应从起始位0开始，数据内容不应为48字节连续`0x00`。
+4. 正常请求帧应包含ASCII `0x7E`帧头，例如`7E 32 30 30 32...0D`，不是未初始化字节或全零帧。
+
+PC5 每 250 ms 翻转一次，用于指示轮询功能已运行；这个心跳只表示轮询服务已启用，不代表电池一定在线。通讯状态和最新解析结果保存在 `g_battery_data`：
+
+- `analog`：系统电压（mV）、带符号电流（mA，充电为正）、SOC/SOH、循环次数、电芯/MOS/BMS 温度（0.01°C）及模块地址。
+- 系统电流按当前电池实测值转换：`0x61` 有符号原始值每单位为 10 mA，解析时乘以 10；首页和电池页共用该结果。此倍率与仓库协议文档中 `/1000 A` 的示例不一致，需结合实际电池返回帧与参考电流确认；充放电限制 `0x63` 的单位不受影响。
+- `alarms`：分别保存两组告警和两组保护状态字节；`battery_rs485.h` 提供每一位的命名掩码，方便后续判断具体告警。
+- `charge`：充放电电压限值（mV）、电流限值（0.1 A）和状态位。
+- `available_mask`：对应字段有效位；协议中的 `0xFF` / `0xFFFF` 缺失值不会被当成有效测量值。
+- `address`、`last_rtn`、`last_error` 和计数器：电池地址与通讯诊断信息。
+
+LCD 共五页：第 3 页显示 SOC、电压、充放电电流、平均/最小 SOH、电池状态、通讯情况及电池数量；第 4 页显示单芯、MOS、BMS 的最高/平均温度及四项告警/保护状态；第 5 页显示外部传感器演示值。告警位按 bit0 至 bit7 显示，例如 `1/4/6`；未知字段显示 `--`。电池页只刷新变化的行。当前超时后旧数值不会自动清除，应结合通讯情况判断数据是否仍然可靠。
+
+第 3、4 页之间翻页时保留共同的标题和边框，只清除数据行后重绘；从其他页面进入时仍清屏，避免残影。软件 SPI 时序保持不变。
+
+电池页中，SOC、SOH 和充电数据为绿色，电压和温度为青色，放电数据为橙色，电池数量为黄色；无数据时显示灰色。通讯及告警/保护状态正常为绿色、异常为红色，未知为灰色；电池空闲状态为青色。这些数据颜色不代表基于数值阈值的告警。
 - **ST-Link烧录时间**: 2-5秒
 - **串口烧录时间**: 10-20秒
 
@@ -892,26 +982,20 @@ $env:Path = "D:\Tools\ARM_GCC\arm-gnu-toolchain-13.2.Rel1-mingw-w64-i686-arm-non
 
 ```
 stm32_1/
-├── Inc/                    # 头文件目录
-│   └── lcd_st7789.h       # LCD驱动头文件
-├── Src/                    # 源代码目录
-│   ├── main.c             # 主程序（LCD显示+LED指示+串口通讯）
-│   ├── lcd_st7789.c       # LCD驱动实现
-│   ├── startup_stm32f103xx.S  # 启动文件
-│   ├── syscall.c          # 系统调用
-│   └── sysmem.c           # 内存管理
-├── SYSTEM/                 # 系统组件目录
-│   ├── delay/             # 延时函数
-│   │   ├── delay.c
-│   │   └── delay.h
-│   ├── sys/               # 系统配置
-│   │   ├── sys.c
-│   │   └── sys.h
-│   └── usart/             # 串口驱动
-│       ├── usart.c        # USART1驱动（保留）
-│       ├── usart.h
-│       ├── usart3.c       # USART3驱动（PC10/PC11）⭐ 新增
-│       └── usart3.h       # USART3头文件 ⭐ 新增
+├── System/                 # STM32系统配置与启动文件
+│   ├── core_cm3.h          # Cortex-M3 CMSIS核心定义
+│   ├── stm32f10x.h         # STM32F103设备定义
+│   ├── system_stm32f10x.*  # 时钟与系统初始化
+│   ├── stm32f10x_it.*      # 异常与中断服务入口
+│   ├── startup_stm32f103xx.S  # 启动与向量表
+│   ├── syscall.c           # Newlib系统调用
+│   ├── sysmem.c            # 堆内存管理
+│   └── stm32f103xc_flash.ld # 链接脚本
+├── Modules/                # 应用逻辑与功能模块
+│   ├── main.c              # 主程序
+│   ├── lcd_st7789.c/h      # ST7789显示驱动
+│   ├── battery_rs485.c/h   # 电池RS485通讯模块
+│   └── chinese_font.c/h    # 中文字库
 ├── cmake/                  # CMake配置文件
 │   ├── target.cmake       # 目标芯片定义
 │   ├── flags.cmake        # 编译标志
@@ -921,7 +1005,6 @@ stm32_1/
 ├── build/                  # 构建输出目录
 ├── CMakeLists.txt         # 主CMake配置
 ├── CMakePresets.json      # CMake预设配置
-├── stm32f103xc_flash.ld   # 链接脚本
 ├── flash_stlink.ps1       # ST-Link烧录脚本 ⭐
 ├── flash_stm32.ps1        # 串口烧录脚本
 ├── install_stlink_tools.ps1  # 工具安装脚本

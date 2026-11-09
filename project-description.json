@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "stm32_1",
   "configurations": [
     {
@@ -10,16 +10,16 @@
       "toolchain_prefix": "",
       "sources": [
         {
-          "path": "Src/syscall.c"
+          "path": "System/syscall.c"
         },
         {
-          "path": "Src/sysmem.c"
+          "path": "System/sysmem.c"
         },
         {
-          "path": "Src/main.c"
+          "path": "Modules/main.c"
         },
         {
-          "path": "Src/startup_stm32f103xx.S"
+          "path": "System/startup_stm32f103xx.S"
         }
       ],
       "tools": [
@@ -39,7 +39,7 @@
             "-O0",
             "-g3",
             "-ggdb",
-            "-IInc",
+            "-ISystem", "-IModules",
             "-DRTE_DEVICE_STARTUP_STM32F1XX",
             "-DDEBUG",
             "-x",
@@ -64,7 +64,7 @@
             "-O0",
             "-g3",
             "-ggdb",
-            "-IInc",
+            "-ISystem", "-IModules",
             "-DRTE_DEVICE_STARTUP_STM32F1XX",
             "-DDEBUG"
           ]
@@ -85,7 +85,7 @@
             "-O0",
             "-g3",
             "-ggdb",
-            "-IInc",
+            "-ISystem", "-IModules",
             "-DRTE_DEVICE_STARTUP_STM32F1XX",
             "-DDEBUG",
             "-fno-rtti",
@@ -96,7 +96,7 @@
         {
           "type": "c_linker",
           "flags": [
-            "-Tstm32f103xc_flash.ld",
+            "-TSystem/stm32f103xc_flash.ld",
             "-Wl,-Map=stm32_1.map",
             "-u",
             "_printf_float",
@@ -122,16 +122,16 @@
       "toolchain_prefix": "",
       "sources": [
         {
-          "path": "Src/syscall.c"
+          "path": "System/syscall.c"
         },
         {
-          "path": "Src/sysmem.c"
+          "path": "System/sysmem.c"
         },
         {
-          "path": "Src/main.c"
+          "path": "Modules/main.c"
         },
         {
-          "path": "Src/startup_stm32f103xx.S"
+          "path": "System/startup_stm32f103xx.S"
         }
       ],
       "tools": [
@@ -149,7 +149,7 @@
             "-Wpedantic",
             "-Wno-unused-parameter",
             "-Os",
-            "-IInc",
+            "-ISystem", "-IModules",
             "-DRTE_DEVICE_STARTUP_STM32F1XX",
             "-x",
             "assembler-with-cpp",
@@ -171,7 +171,7 @@
             "-Wpedantic",
             "-Wno-unused-parameter",
             "-Os",
-            "-IInc",
+            "-ISystem", "-IModules",
             "-DRTE_DEVICE_STARTUP_STM32F1XX"
           ]
         },
@@ -189,7 +189,7 @@
             "-Wpedantic",
             "-Wno-unused-parameter",
             "-Os",
-            "-IInc",
+            "-ISystem", "-IModules",
             "-DRTE_DEVICE_STARTUP_STM32F1XX",
             "-fno-rtti",
             "-fno-exceptions",
@@ -199,7 +199,7 @@
         {
           "type": "c_linker",
           "flags": [
-            "-Tstm32f103xc_flash.ld",
+            "-TSystem/stm32f103xc_flash.ld",
             "-Wl,-Map=stm32_1.map",
             "-u",
             "_printf_float",

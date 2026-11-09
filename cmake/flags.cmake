@@ -86,7 +86,8 @@ target_compile_options(${PROJECT_NAME} PUBLIC
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC 
-    "${CMAKE_CURRENT_SOURCE_DIR}/Inc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/System"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Modules"
 )
 
 target_compile_definitions(${PROJECT_NAME} PUBLIC 
