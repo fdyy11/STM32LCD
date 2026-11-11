@@ -7,6 +7,7 @@
 #include "battery_rs485.h"
 #include "battery_pages.h"
 #include "wifi_uart4.h"
+#include "startup_logo.h"
 
 #include <stdio.h>
 #include <stdint.h>
@@ -384,14 +385,43 @@ int main(void)
     WiFi_UART4_Init();
 
     uint8_t current_page = UI_PAGE_OVERVIEW;
+    uint8_t showing_startup = 1u;
+    uint8_t key_esc_released = 1u;
     uint8_t key_up_released = 1u;
     uint8_t key_down_released = 1u;
     BatteryUiSnapshot battery_snapshot = battery_ui_snapshot();
 
-    display_page(current_page);
+    LCD_Fill_Fast(COLOR_WHITE);
+    LCD_Draw_4Bit_Bitmap((LCD_WIDTH - STARTUP_LOGO_WIDTH) / 2u,
+                         (LCD_HEIGHT - STARTUP_LOGO_HEIGHT) / 2u,
+                         STARTUP_LOGO_WIDTH, STARTUP_LOGO_HEIGHT,
+                         startup_logo, startup_logo_palette);
 
     while(1) {
         Battery_RS485_PollService();
+
+        if(KEY_ESC_PRESSED()) {
+            if(key_esc_released) {
+                delay_key_debounce();
+                if(KEY_ESC_PRESSED()) {
+                    key_esc_released = 0u;
+                    if(showing_startup || current_page != UI_PAGE_OVERVIEW) {
+                        showing_startup = 0u;
+                        current_page = UI_PAGE_OVERVIEW;
+                        display_page(current_page);
+                    }
+                    key_up_released = !KEY_PAGEUP_PRESSED();
+                    key_down_released = !KEY_PAGEDOWN_PRESSED();
+                }
+            }
+        } else {
+            key_esc_released = 1u;
+        }
+
+        if(showing_startup) {
+            delay_ms(10u);
+            continue;
+        }
 
         if(KEY_PAGEDOWN_PRESSED()) {
             if(key_down_released) {

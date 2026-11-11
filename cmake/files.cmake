@@ -3,6 +3,7 @@ target_sources(${PROJECT_NAME} PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/System/syscall.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/System/sysmem.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/Modules/main.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Modules/startup_logo.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/Modules/battery_rs485.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/Modules/battery_pages.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/Modules/wifi_uart4.c"

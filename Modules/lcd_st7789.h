@@ -30,6 +30,7 @@
 #define LCD_LEDK_PIN        7
 
 // 按键引脚定义
+#define KEY_ESC_PIN         0   // PC0 - Esc (返回首页)
 #define KEY_PAGEUP_PIN      2   // PC2 - PageUp (上一页)
 #define KEY_PAGEDOWN_PIN    3   // PC3 - PageDown (下一页)
 
@@ -48,7 +49,8 @@
 #define LCD_BACKLIGHT_ON()  (GPIOB->BSRR = (1 << LCD_LEDK_PIN))         // PB7 HIGH
 #define LCD_BACKLIGHT_OFF() (GPIOB->BSRR = (1 << (LCD_LEDK_PIN + 16)))  // PB7 LOW
 
-// 按键读取宏（PC2/PC3 低电平表示按下）
+// 按键读取宏（低电平表示按下）
+#define KEY_ESC_PRESSED()       ((GPIOC->IDR & (1 << KEY_ESC_PIN)) == 0)
 #define KEY_PAGEUP_PRESSED()    ((GPIOC->IDR & (1 << KEY_PAGEUP_PIN)) == 0)
 #define KEY_PAGEDOWN_PRESSED()  ((GPIOC->IDR & (1 << KEY_PAGEDOWN_PIN)) == 0)
 
@@ -82,6 +84,9 @@ void LCD_Fill(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint16_t color
 void LCD_Fill_Rect(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint16_t color);  // 快速局部清屏
 void LCD_Fill_Fast(uint16_t color);  // 快速全屏清屏
 void LCD_Write_CmdData(uint8_t cmd, const uint8_t *data, uint16_t len);
+/* 4-bit palette indices, high nibble first; each row is byte-aligned. */
+void LCD_Draw_4Bit_Bitmap(uint16_t x, uint16_t y, uint16_t width, uint16_t height,
+                          const uint8_t *bitmap, const uint16_t *palette);
 
 /* 中文显示函数 */
 void LCD_Show_Chinese(uint16_t x, uint16_t y, uint16_t unicode, uint16_t color, uint16_t bg_color);

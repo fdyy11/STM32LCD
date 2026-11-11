@@ -154,12 +154,16 @@ void LCD_GPIO_Init(void) {
 
 /* ============================================================================
  * 按键 GPIO 初始化
- *   PC2 (PageUp) 和 PC3 (PageDown) 配置为上拉输入
+ *   PC0 (Esc)、PC2 (PageUp) 和 PC3 (PageDown) 配置为上拉输入
  * ============================================================================ */
 void KEY_GPIO_Init(void) {
     // 1. 使能 GPIOC 时钟（如果未在LCD_GPIO_Init中使能）
     RCC->APB2ENR |= (1 << 4);
     
+    // PC0 (Esc)：上拉输入模式
+    GPIOC->CRL &= ~(0xF << (KEY_ESC_PIN * 4));
+    GPIOC->CRL |=  (0x8 << (KEY_ESC_PIN * 4));
+
     // 2. PC2 (PageUp)：上拉输入模式
     GPIOC->CRL &= ~(0xF << (KEY_PAGEUP_PIN * 4));
     GPIOC->CRL |=  (0x8 << (KEY_PAGEUP_PIN * 4));  // 输入模式 (00) + 上拉 (10) = 1000 = 0x8
@@ -169,6 +173,7 @@ void KEY_GPIO_Init(void) {
     GPIOC->CRL |=  (0x8 << (KEY_PAGEDOWN_PIN * 4)); // 输入模式 (00) + 上拉 (10) = 1000 = 0x8
     
     // 4. 设置输出高电平（上拉电阻使能）
+    GPIOC->BSRR = (1 << KEY_ESC_PIN);      // PC0 上拉
     GPIOC->BSRR = (1 << KEY_PAGEUP_PIN);   // PC2 上拉
     GPIOC->BSRR = (1 << KEY_PAGEDOWN_PIN); // PC3 上拉
 }
@@ -385,6 +390,31 @@ void LCD_Draw_Point(uint16_t x, uint16_t y, uint16_t color) {
     SOFT_SPI_WriteData((color >> 8) & 0xFF);
     SOFT_SPI_WriteData(color & 0xFF);
     LCD_CS_HIGH();  // 画完一个点后拉高CS
+}
+
+void LCD_Draw_4Bit_Bitmap(uint16_t x, uint16_t y, uint16_t width, uint16_t height,
+                           const uint8_t *bitmap, const uint16_t *palette) {
+    if(bitmap == NULL || palette == NULL || width == 0u || height == 0u ||
+       x >= LCD_WIDTH || y >= LCD_HEIGHT) return;
+
+    uint16_t draw_width = width < LCD_WIDTH - x ? width : LCD_WIDTH - x;
+    uint16_t draw_height = height < LCD_HEIGHT - y ? height : LCD_HEIGHT - y;
+    uint32_t stride = ((uint32_t)width + 1u) / 2u;
+
+    LCD_Set_Window(x, y, x + draw_width - 1u, y + draw_height - 1u);
+    LCD_DC_HIGH();
+    for(uint16_t row = 0u; row < draw_height; row++) {
+        for(uint16_t col = 0u; col < draw_width; col++) {
+            uint8_t packed_pixels = bitmap[(uint32_t)row * stride + col / 2u];
+            uint8_t palette_index = (col & 1u) == 0u
+                                        ? (uint8_t)(packed_pixels >> 4)
+                                        : (uint8_t)(packed_pixels & 0x0Fu);
+            uint16_t pixel = palette[palette_index];
+            SOFT_SPI_WriteData((uint8_t)(pixel >> 8));
+            SOFT_SPI_WriteData((uint8_t)pixel);
+        }
+    }
+    LCD_CS_HIGH();
 }
 
 /* ============================================================================
