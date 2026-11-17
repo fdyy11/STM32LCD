@@ -159,6 +159,7 @@ extern BatteryData g_battery_data;
 void Battery_RS485_Init(void);
 void Battery_RS485_PollService(void);
 void Battery_RS485_SysTickHandler(void);
+uint32_t Battery_RS485_GetTickMs(void);
 void Battery_RS485_SendBytes(const uint8_t *data, uint16_t length);
 void USART3_IRQHandler(void);
 

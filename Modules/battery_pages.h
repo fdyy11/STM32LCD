@@ -10,5 +10,6 @@ typedef enum {
 
 void display_battery_page(BatteryPage page, uint8_t reuse_layout);
 void battery_page_update(BatteryPage page);
+void battery_page_clear(void);
 
 #endif

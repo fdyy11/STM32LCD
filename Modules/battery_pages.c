@@ -15,22 +15,61 @@ static void draw_border(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint
 typedef struct {
     char text[96];
     uint16_t color;
+    uint16_t x;
+    uint16_t y;
+    uint16_t width;
     uint8_t valid;
 } BatteryPageLine;
 
 static BatteryPageLine battery_page_lines[8];
+
+static uint16_t battery_text_width(const char *text)
+{
+    uint16_t width = 0u;
+
+    while(*text != '\0') {
+        uint8_t ch = (uint8_t)*text;
+        if(ch < 0x80u) {
+            width += 8u;
+            text++;
+        } else if(ch >= 0xE0u && ch <= 0xEFu &&
+                  text[1] != '\0' && text[2] != '\0') {
+            width += 16u;
+            text += 3;
+        } else if(ch >= 0xC0u && ch < 0xE0u && text[1] != '\0') {
+            width += 16u;
+            text += 2;
+        } else {
+            text++;
+        }
+    }
+
+    return width;
+}
 
 static void battery_page_part(uint8_t index, uint16_t x, uint16_t y, uint16_t width,
                               const char *text, uint16_t color)
 {
     BatteryPageLine *line = &battery_page_lines[index];
     if(!line->valid || line->color != color || strcmp(line->text, text) != 0) {
-        if(line->valid) {
-            LCD_Fill(x, y, x + width - 1u, y + 15u, COLOR_BLACK);
-        }
+        uint16_t old_width = line->valid ? battery_text_width(line->text) : 0u;
+        uint16_t new_width = battery_text_width(text);
+        if(new_width > width) new_width = width;
+
         LCD_Show_String_With_Chinese(x, y, text, color, COLOR_BLACK);
+        if(old_width > new_width) {
+            uint16_t clear_x = x + new_width;
+            uint16_t clear_end = x + old_width - 1u;
+            if(clear_end > x + width - 1u) clear_end = x + width - 1u;
+            if(clear_x <= clear_end) {
+                LCD_Fill(clear_x, y, clear_end, y + 15u, COLOR_BLACK);
+            }
+        }
         (void)snprintf(line->text, sizeof(line->text), "%s", text);
         line->color = color;
+        line->x = x;
+        line->y = y;
+        line->width = width;
         line->valid = 1u;
     }
 }
@@ -195,17 +234,30 @@ void battery_page_update(BatteryPage page)
 void display_battery_page(BatteryPage page, uint8_t reuse_layout)
 {
     if(reuse_layout) {
-        static const uint16_t line_y[] = {48u, 71u, 94u, 142u, 163u, 184u, 205u};
-        for(uint8_t i = 0u; i < sizeof(line_y) / sizeof(line_y[0]); i++) {
-            LCD_Fill(12u, line_y[i], 307u, line_y[i] + 15u, COLOR_BLACK);
-        }
+        battery_page_clear();
     } else {
-        LCD_Fill_Fast(COLOR_BLACK);
         LCD_Show_String_With_Chinese(8u, 8u, "\xE7\x94\xB5\xE6\xB1\xA0\xE8\xAF\xA6\xE6\x83\x85", COLOR_YELLOW, COLOR_BLACK);
         draw_border(8u, 38u, 311u, 120u, COLOR_WHITE);
         draw_border(8u, 132u, 311u, 230u, COLOR_WHITE);
     }
-    LCD_Show_String_With_Chinese(278u, 8u, page == BATTERY_PAGE_SUMMARY ? "3/5" : "4/5", COLOR_CYAN, COLOR_BLACK);
+    LCD_Show_String_With_Chinese(278u, 8u, page == BATTERY_PAGE_SUMMARY ? "4/6" : "5/6", COLOR_CYAN, COLOR_BLACK);
     memset(battery_page_lines, 0, sizeof(battery_page_lines));
     battery_page_update(page);
+}
+
+void battery_page_clear(void)
+{
+    for(uint8_t i = 0u; i < sizeof(battery_page_lines) / sizeof(battery_page_lines[0]); i++) {
+        BatteryPageLine *line = &battery_page_lines[i];
+        if(line->valid) {
+            uint16_t width = battery_text_width(line->text);
+            if(width > line->width) width = line->width;
+            if(width != 0u) {
+                LCD_Fill(line->x, line->y, line->x + width - 1u,
+                         line->y + 15u, COLOR_BLACK);
+            }
+        }
+        line->valid = 0u;
+        line->text[0] = '\0';
+    }
 }

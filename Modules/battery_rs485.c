@@ -673,6 +673,10 @@ void Battery_RS485_SysTickHandler(void) {
     }
 }
 
+uint32_t Battery_RS485_GetTickMs(void) {
+    return battery_tick_ms;
+}
+
 void USART3_IRQHandler(void) {
     uint32_t status = USART3->SR;
     if((status & USART_SR_RXNE) != 0u) {
